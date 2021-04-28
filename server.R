@@ -2,13 +2,14 @@ library(tidyverse)
 library(ggrepel)
 library(forecast)
 library(reshape2)
+library(DT)
 library(ggpubr)
 library(shiny)
 library(viridis)
 
 #### Funktion für Timeseries ####
 # Ursprünglich erstellt, um auch Genesen und Tod mit dynamischer Regression vorherzusagen; abgewandelt für Shiny
-# Logik: Prä-allosziere Dataframe, fülle es mit Vorhersage; ermöglich durch daymax-days auch retrospektive Vorhersage
+# Logik: Prä-allosziere Dataframe, fülle es mit Vorhersage; ermöglicht durch daymax-days auch retrospektive Vorhersage
 # df: Dataframe Input; col_cases: Spaltenname mit relevanten Timeseries-Daten; method: Art der Vorhersage (arima, ets, ...)
 # robust: Median ja/nein; daypred: Anzahl der vorhergesagten Tage; daymax: max(Meldedatum)-days; days: Tage Retrospektive; lambda: Anpassungsparameter, standardmäßig 'auto'
 forecast_append <- function(df, col_cases, method, robust, daypred, daymax, days, lambda){
@@ -77,12 +78,16 @@ server <- function(input, output, session) {
   # Dynamische I/O-Berechnungen für Werte im Plot
   observe({
     values$aktval <- df_fltwide() %>% group_by(Landkreis) %>% summarize(Akt = sum(Aktiv)) %>% pull(Akt)
-    values$inzp <- df_forecast() %>% group_by(Landkreis) %>% summarize(Inz7p = sum(mean)) %>% pull(Inz7p)
+    values$inzp <- df_forecast() %>% group_by(Landkreis) %>% summarize(Inz7p = sum(mean)) %>% pull(Inz7p) # Mittelwert Vorhersageintervall
+    values$inzp_upi <- df_forecast() %>% group_by(Landkreis) %>% summarize(Inz7p = sum(hi95)) %>% pull(Inz7p) # oberes Limit Vorhersageintervall
+    values$inzp_lpi <- df_forecast() %>% group_by(Landkreis) %>% summarize(Inz7p = sum(lo95)) %>% pull(Inz7p) # unteres Limit Vorhersageintervall
     values$vars <-  data.frame("Landkreis" = input$spot, "Population" = input$population)
     values$inz2 <-  df_filter() %>% filter(Meldedatum >= max(Meldedatum)-6) %>%
       group_by(Landkreis) %>% summarize(Summe7 = sum(Anzahl))
     values$inz <-  full_join(values$vars, values$inz2, by = "Landkreis") %>% mutate(Inzidenz = round(Summe7*100000/input$population))
     values$inz_prognose <- round(values$inzp*100000/(input$population*(input$daypred/7)))
+    values$inz_prognose_min <- round(values$inzp_lpi*100000/(input$population*(input$daypred/7)))
+    values$inz_prognose_max <- round(values$inzp_upi*100000/(input$population*(input$daypred/7)))
   })
   
   output$plot <- renderPlot({
@@ -103,17 +108,17 @@ server <- function(input, output, session) {
     values$abw <- as.numeric(df_forecast_x$mean - df_filter_x$Anzahl)# Abweichung
     abw_abs <- round(sum(values$abw)/length(df_forecast_x$mean)) # Durchschnittliche Abweichung
     abw_sd <- round(sqrt(sum(values$abw^2)/length(df_forecast_x$mean))) #SD der Abweichung
-    
-    d <-  ggplot(df_filter_,aes(x=Meldedatum, y=Anzahl, fill=Anteil,group=Anteil))+
+
+    d <- ggplot(df_filter_,aes(x=Meldedatum, y=Anzahl, fill=Anteil, group=Anteil))+
       geom_area(position="identity", alpha=.8)+
       theme_minimal()+
       scale_x_date(date_breaks = "1 month", guide=guide_axis(angle=45))+
       scale_y_continuous(sec.axis = sec_axis(~ ., breaks = df_filter_ %>% group_by(Anteil) %>% top_n(1,Meldedatum) %>% pull(Anzahl)))+
-      facet_grid(Landkreis~., )+
+      facet_grid(Landkreis~.)+ # damit der SK/LK am Rand der Zeile angezeigt wird
       labs(title=paste('Corona-Zeitreihenanalyse (für den Privatgebrauch)'), subtitle=sprintf("Aktive Fälle: %s   Aktuelle 7-Tage-Inzidenz: %s pro 100.000 Einwohner",
                                                                      values$aktval, as.character(values$inz$Inzidenz)))
 
-    d <- d + geom_line(data=df_forecast_, aes(x=Meldedatum, y=mean),lty=2)+
+    d <- d + geom_line(data=df_forecast_, aes(x=Meldedatum, y=mean), lty=2)+
       theme(legend.position="bottom")+
       coord_cartesian(xlim=c(Sys.Date()-xmax, xlim_upper), expand=F)+
       scale_color_viridis_d()+
@@ -125,10 +130,10 @@ server <- function(input, output, session) {
     
     if (input$daysim > 1) { # mind. 2 Datenpunkte notwendig
       d <- d + labs(y = "Täglich gemeldete Neuinfektionen",
-                    caption = sprintf("7-Tage-Inzidenz im Vorhersagezeitraum (Mittelwert): %s pro 100.000 Einwohner\nAbsolute Vorhersageabweichung pro Tag (Mittelwert): %s (SD = %s)\n\nFallzahlen: Robert Koch-Institut", values$inz_prognose, abw_abs, abw_sd))
+                    caption = sprintf("7-Tage-Inzidenz im Vorhersagezeitraum (Mittelwert & 95%%-Vorhersageintervall): %s [%s, %s] pro 100.000 Einwohner\nAbsolute Vorhersageabweichung pro Tag (Mittelwert): %s (SD = %s)\n\nFallzahlen: Robert Koch-Institut", values$inz_prognose, values$inz_prognose_min, values$inz_prognose_max, abw_abs, abw_sd))
     } else {
       d <- d + labs(y = "Täglich gemeldete Neuinfektionen",
-                    caption = sprintf("7-Tage-Inzidenz im Vorhersagezeitraum (Mittelwert): %s pro 100.000 Einwohner\n\nFallzahlen: Robert Koch-Institut", values$inz_prognose))
+                    caption = sprintf("7-Tage-Inzidenz im Vorhersagezeitraum (Mittelwert & 95%%-Vorhersageintervall): %s [%s, %s] pro 100.000 Einwohner\n\nFallzahlen: Robert Koch-Institut", values$inz_prognose, values$inz_prognose_min, values$inz_prognose_max))
     }
     
     print(d)
@@ -142,5 +147,6 @@ server <- function(input, output, session) {
                                                          sub = "Abweichung > 0: Modell überschätzt; Abweichung < 0: Modell unterschätzt"); abline(v=0) })
     
   
+  #output$ntable <- renderDataTable({datatable(values$inzp, options = list(orderClasses = TRUE,lengthMenu = c(5, 10, 30), pageLength = 5))})
 }
 
