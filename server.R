@@ -5,6 +5,7 @@ library(dplyr)
 library(tidyr)
 library(lubridate)
 library(reshape2)
+library(DT)
 library(ggrepel)
 library(ggpubr)
 library(forecast)
@@ -162,7 +163,5 @@ server <- function(input, output, session) {
                                                          ylab = "Dichte",
                                                          xlab = "Abweichung der Modellwerte von den tatsächlichen Werten",
                                                          sub = "Abweichung > 0: Modell überschätzt; Abweichung < 0: Modell unterschätzt"); abline(v=0) })
-    
-  #output$ntable <- renderDataTable({datatable(values$inzp, options = list(orderClasses = TRUE,lengthMenu = c(5, 10, 30), pageLength = 5))})
 }
 
