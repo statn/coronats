@@ -2,7 +2,7 @@ ui <- fluidPage(
   sidebarLayout(
     sidebarPanel(
       conditionalPanel( condition = "document.getElementById('plot').childElementCount == 0",
-      helpText('Bitte zurücklehnen und entspannen, während die App initialisiert wird...\nDies kann etwa 10 Sekunden dauern.\n\nFalls die Meldung "Disconnected from the server" erscheint, bitte noch einmal probieren.')
+      helpText('Bitte zurücklehnen und entspannen, während die App initialisiert wird...\nDies kann aufgrund der Größe des Datensatzes bis zu 20 Sekunden dauern.\n\nFalls die Meldung "Disconnected from the server" erscheint, bitte noch einmal probieren.')
       ),
       conditionalPanel( # Sidepanel wird erst gezeigt, nachdem der Datensatz heruntergeladen und aufbereitet wurde
         condition = "document.getElementById('plot').childElementCount != 0", # Plot ist erst verfügbar, wenn Daten vorhanden sind 
