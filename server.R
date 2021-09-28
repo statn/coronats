@@ -1,9 +1,14 @@
-library(tidyverse)
-library(ggrepel)
-library(forecast)
+library(readr)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(lubridate)
 library(reshape2)
-library(DT)
+library(ggrepel)
 library(ggpubr)
+library(forecast)
+library(pryr)
 library(shiny)
 library(viridis)
 
@@ -14,29 +19,34 @@ library(viridis)
 # robust: Median ja/nein; daypred: Anzahl der vorhergesagten Tage; daymax: max(Meldedatum)-days; days: Tage Retrospektive; lambda: Anpassungsparameter, standardmäßig 'auto'
 forecast_append <- function(df, col_cases, method, robust, daypred, daymax, days, lambda){
   df_append <- data.frame(Meldedatum = character(daypred), Landkreis = character(daypred))
+  lk_temp <- df$Landkreis[1]
   df_temp <- df %>% gather(key = 'Type', value = 'Factor', col_cases) %>% filter(Meldedatum > daymax-days, Meldedatum <= daymax)
+  rm(df) # Speicher freigeben
   df_append$Meldedatum <- daymax + 1:daypred
-  df_append$Landkreis <- df$Landkreis[1]
+  df_append$Landkreis <- lk_temp
   df_append$Anteil <- col_cases
   counter = 0
   tryCatch({
     ts_obj <- ts(log(na.omit(df_temp$Factor)), frequency = 7) # Timeseries mit log-Transformation, damit Werte > 0
     fit <- ts_obj %>% stl(s.window='periodic', robust=robust) # Fitting
+    rm(ts_obj) # Speicher freigeben
     fit <- fit %>% seasadj() %>% stlf(h=daypred,method=method, biasadj = T, lambda = lambda) # Vorhersage
     df_append['mean'] <- round(exp(fit$mean[1:daypred]))
     df_append['hi95'] <- round(exp(fit$upper[,1][1:daypred]))
     df_append['lo95'] <- round(exp(fit$lower[,1][1:daypred]))
+    rm(fit)
   },
   error=function(cond){
     warning("STL didn't succeed. Set lambda to NULL.\n") # In seltenen Fällen kann Lambda Probleme verursachen
     test <- ts(log(na.omit(df_temp$Factor)), frequency = 7)
     fit <- test %>% stl(s.window = 'periodic', robust = robust)
+    rm(test)
     fit <- fit %>% seasadj() %>% stlf(h=daypred,method=method, biasadj = T, lambda = NULL)
     df_append['mean'] <- round(exp(fit$mean[1:daypred]))
     df_append['hi95'] <- round(exp(fit$upper[,1][1:daypred]))
     df_append['lo95'] <- round(exp(fit$lower[,1][1:daypred]))
   })
-  
+  rm(df_temp) # Speicher freigeben
   return(df_append)
 }
 
@@ -46,21 +56,25 @@ server <- function(input, output, session) {
   
   cat("Retrieving dataset...")
   RKI_data = read_csv("https://www.arcgis.com/sharing/rest/content/items/f10774f1c63e40168479a1feb6c7ca74/data")
+  cat("Success.\n")
   #load("~/Desktop/rki.rda") # zu Entwicklungszwecken
+  sprintf("Size of data frame: %sMB", round(pryr::object_size(RKI_data)/1048576))
   RKI_data$Meldedatum = as.Date(RKI_data$Meldedatum, format = "%Y/%m/%d")
   set_lambda='auto' # Parameter für Vorhersage-Input
+  max_date <- max(RKI_data$Meldedatum)
+  unique_city <- unique(RKI_data$Landkreis)
   
-  data <- RKI_data # Datensatz in reaktives Element überführen
-  makeReactiveBinding("data")
+  makeReactiveBinding("RKI_data")
   values <- reactiveValues()
-  updateSelectInput(session, inputId = "spot", choices = unique(RKI_data$Landkreis), selected = "SK Dortmund") # Zeige Auswahl, nachdem Daten verfügbar sind
   
-  # Verschiedene Datentransformationen des Orignial-Datensatzes
+  updateSelectInput(session, inputId = "spot", choices = unique_city, selected = "SK Dortmund") # Zeige Auswahl, nachdem Daten verfügbar sind
+
+  # Verschiedene Datentransformationen des Original-Datensatzes
   df_filter <- reactive({
-    values$daymax = max(data$Meldedatum) - input$daysim
+    values$daymax = max_date - input$daysim
     values$set_days_use = input$set_days_use
-    data <- RKI_data
-    data <- data %>%
+    data_rki <- RKI_data
+    data_rki <- data_rki %>%
       select(Landkreis, Meldedatum, AnzahlFall, AnzahlGenesen, AnzahlTodesfall) %>%
       filter(Landkreis == input$spot) %>%
       group_by(Landkreis, Meldedatum) %>%
@@ -69,27 +83,30 @@ server <- function(input, output, session) {
       arrange(Meldedatum)
   }) 
   df_fltwide <- reactive({ 
-    data <- df_filter() %>% spread(Anteil, Anzahl) %>% mutate(Aktiv = Neu-Tod-Rehab) %>% group_by(Landkreis, Meldedatum)
+   data_rki <- df_filter() %>% spread(Anteil, Anzahl) %>% mutate(Aktiv = Neu-Rehab) %>% group_by(Landkreis, Meldedatum)
   })
   # Dataframe mit Vorhersage
   df_forecast <- reactive({
-    data <- forecast_append(df_fltwide(), "Neu", method=input$method, robust=input$robust, daypred=input$daypred, daymax=isolate(values$daymax) , days=isolate(input$set_days_use), lambda=set_lambda)
-  })
+   data_rki <- forecast_append(df_fltwide(), "Neu", method=input$method, robust=input$robust, daypred=input$daypred, daymax=isolate(values$daymax) , days=isolate(input$set_days_use), lambda=set_lambda)
+    })
+  rm(data_rki) # Speicher freigeben
+  
   # Dynamische I/O-Berechnungen für Werte im Plot
   observe({
-    values$aktval <- df_fltwide() %>% group_by(Landkreis) %>% summarize(Akt = sum(Aktiv)) %>% pull(Akt)
+    values$aktval <- df_fltwide() %>% group_by(Landkreis) %>% summarize(Akt = sum(Aktiv)) %>% pull(Akt) # Aktive Fälle
     values$inzp <- df_forecast() %>% group_by(Landkreis) %>% summarize(Inz7p = sum(mean)) %>% pull(Inz7p) # Mittelwert Vorhersageintervall
-    values$inzp_upi <- df_forecast() %>% group_by(Landkreis) %>% summarize(Inz7p = sum(hi95)) %>% pull(Inz7p) # oberes Limit Vorhersageintervall
-    values$inzp_lpi <- df_forecast() %>% group_by(Landkreis) %>% summarize(Inz7p = sum(lo95)) %>% pull(Inz7p) # unteres Limit Vorhersageintervall
+    values$inzp_upi <- df_forecast() %>% group_by(Landkreis) %>% summarize(Inz7p = sum(hi95)) %>% pull(Inz7p) # Oberes Limit Vorhersageintervall
+    values$inzp_lpi <- df_forecast() %>% group_by(Landkreis) %>% summarize(Inz7p = sum(lo95)) %>% pull(Inz7p) # Unteres Limit Vorhersageintervall
     values$vars <-  data.frame("Landkreis" = input$spot, "Population" = input$population)
     values$inz2 <-  df_filter() %>% filter(Meldedatum >= max(Meldedatum)-6) %>%
       group_by(Landkreis) %>% summarize(Summe7 = sum(Anzahl))
-    values$inz <-  full_join(values$vars, values$inz2, by = "Landkreis") %>% mutate(Inzidenz = round(Summe7*100000/input$population))
-    values$inz_prognose <- round(values$inzp*100000/(input$population*(input$daypred/7)))
-    values$inz_prognose_min <- round(values$inzp_lpi*100000/(input$population*(input$daypred/7)))
-    values$inz_prognose_max <- round(values$inzp_upi*100000/(input$population*(input$daypred/7)))
+    values$inz <- full_join(values$vars, values$inz2, by = "Landkreis") %>% mutate(Inzidenz = round(Summe7*100000/input$population)) # Inzidenz
+    values$inz_prognose <- round(values$inzp*100000/(input$population*(input$daypred/7))) # Mittlere Prognose der Inzidenz
+    values$inz_prognose_min <- round(values$inzp_lpi*100000/(input$population*(input$daypred/7))) # Unteres Limit Inzidenz
+    values$inz_prognose_max <- round(values$inzp_upi*100000/(input$population*(input$daypred/7))) # Oberes Limit der Inzidenz
   })
   
+  # Plot
   output$plot <- renderPlot({
     
     max1 <- max(df_forecast()$Meldedatum)
@@ -146,7 +163,6 @@ server <- function(input, output, session) {
                                                          xlab = "Abweichung der Modellwerte von den tatsächlichen Werten",
                                                          sub = "Abweichung > 0: Modell überschätzt; Abweichung < 0: Modell unterschätzt"); abline(v=0) })
     
-  
   #output$ntable <- renderDataTable({datatable(values$inzp, options = list(orderClasses = TRUE,lengthMenu = c(5, 10, 30), pageLength = 5))})
 }
 
