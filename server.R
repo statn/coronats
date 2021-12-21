@@ -56,11 +56,16 @@ forecast_append <- function(df, col_cases, method, robust, daypred, daymax, days
 server <- function(input, output, session) {
   
   cat("Retrieving dataset...")
-  RKI_data = read_csv("https://www.arcgis.com/sharing/rest/content/items/f10774f1c63e40168479a1feb6c7ca74/data")
+  RKI_data = read_csv("https://www.arcgis.com/sharing/rest/content/items/f10774f1c63e40168479a1feb6c7ca74/data",
+                      col_select = c("Landkreis", "Meldedatum", "AnzahlFall", "AnzahlGenesen", "AnzahlTodesfall"),
+                      col_types = "cDn")
+  RKI_data = RKI_data %>%
+    transform(Meldedatum = as.Date(RKI_data$Meldedatum, format = "%Y/%m/%d")) %>%
+    filter(Meldedatum > Sys.Date() - 365 )
+  names(RKI_data)
   cat("Success.\n")
   #load("~/Desktop/rki.rda") # zu Entwicklungszwecken
   sprintf("Size of data frame: %sMB", round(pryr::object_size(RKI_data)/1048576))
-  RKI_data$Meldedatum = as.Date(RKI_data$Meldedatum, format = "%Y/%m/%d")
   set_lambda='auto' # Parameter für Vorhersage-Input
   max_date <- max(RKI_data$Meldedatum)
   unique_city <- unique(RKI_data$Landkreis)
@@ -90,10 +95,10 @@ server <- function(input, output, session) {
   df_forecast <- reactive({
    data_rki <- forecast_append(df_fltwide(), "Neu", method=input$method, robust=input$robust, daypred=input$daypred, daymax=isolate(values$daymax) , days=isolate(input$set_days_use), lambda=set_lambda)
     })
-  rm(data_rki) # Speicher freigeben
   
   # Dynamische I/O-Berechnungen für Werte im Plot
   observe({
+    cat("Computing ggplot indices 1/2.\n")
     values$aktval <- df_fltwide() %>% group_by(Landkreis) %>% summarize(Akt = sum(Aktiv)) %>% pull(Akt) # Aktive Fälle
     values$inzp <- df_forecast() %>% group_by(Landkreis) %>% summarize(Inz7p = sum(mean)) %>% pull(Inz7p) # Mittelwert Vorhersageintervall
     values$inzp_upi <- df_forecast() %>% group_by(Landkreis) %>% summarize(Inz7p = sum(hi95)) %>% pull(Inz7p) # Oberes Limit Vorhersageintervall
@@ -109,17 +114,15 @@ server <- function(input, output, session) {
   
   # Plot
   output$plot <- renderPlot({
-    
-    max1 <- max(df_forecast()$Meldedatum)
+    cat("Computing ggplot indices 2/2.\n")
+    print.data.frame(df_forecast())
     max2 <- max(df_filter()$Meldedatum)
     xlim_upper <- if_else(max1 > max2, max1, max2)
     xmax = input$xmax
     xmax = ifelse(input$sync == T, input$set_days_use, input$xmax) + input$daysim
-    
     df_filter_ <- df_filter()
     df_filter_$Anteil <- plyr::revalue(df_filter_$Anteil, c(Rehab = "davon genesen", Tod = "davon gestorben"))
     df_filter_$Anteil <- factor(df_filter_$Anteil, levels=c("Neu", "davon genesen", "davon gestorben"))
-    
     df_forecast_ <- df_forecast()
     df_filter_x <- filter(df_filter_, Anteil == "Neu" & Meldedatum %in% df_forecast_$Meldedatum)
     df_forecast_x <- filter(df_forecast_, Anteil == "Neu" & Meldedatum %in% df_filter_$Meldedatum)
@@ -127,6 +130,8 @@ server <- function(input, output, session) {
     abw_abs <- round(sum(values$abw)/length(df_forecast_x$mean)) # Durchschnittliche Abweichung
     abw_sd <- round(sqrt(sum(values$abw^2)/length(df_forecast_x$mean))) #SD der Abweichung
 
+    cat("Generating plots.\n")
+    
     d <- ggplot(df_filter_,aes(x=Meldedatum, y=Anzahl, fill=Anteil, group=Anteil))+
       geom_area(position="identity", alpha=.8)+
       theme_minimal()+
