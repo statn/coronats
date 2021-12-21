@@ -116,6 +116,7 @@ server <- function(input, output, session) {
   output$plot <- renderPlot({
     cat("Computing ggplot indices 2/2.\n")
     print.data.frame(df_forecast())
+    max1 <- max(df_forecast()$Meldedatum)
     max2 <- max(df_filter()$Meldedatum)
     xlim_upper <- if_else(max1 > max2, max1, max2)
     xmax = input$xmax
